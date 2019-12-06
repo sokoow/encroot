@@ -1,0 +1,303 @@
+.\"############################################################################
+.\"         Hey, this is a man page; use "man ./encroot.1" to read it!
+.\"############################################################################
+.\"
+.TH ENCROOT 1 "Current" "Gulbra" "Encroot Manual"
+.SH NAME
+encroot \- build encrypted Linux instances on Amazon EC2
+.SH SYNOPSIS
+.B encroot \fR[\fIoptions\fR] \fIdomain
+
+    --address <a>    : private IP address; use once per interface
+    --bootsize <b>   : size of boot partition in 512-byte blocks
+    --big-boot       : full system on /dev/xvda1, not just /boot
+    --dedicated      : use single-tenant hardware (only with VPC)
+    --ebs-type <t>   : EBS volume type; use "gp2" or "io1" for SSD
+    --fix-hook <h>   : hook script to fix distro-specific things
+    --group <g>      : security group; use once per required group
+    --iops <i>       : number of EBS I/O operations per second
+    --key <k>        : name of an SSH key pair for the instance
+    --name <n>       : name of the instance; default is Linux_*
+    --no-color       : remove all annoying colors from the output
+    --no-fonts       : remove bold and thin fonts from the output
+    --no-lines       : replace underscore lines with ASCII dashes
+    --no-style       : remove VT100 escape codes from the output
+    --paravirtual    : use paravirtual virtualization instead of HVM
+    --port <p>       : alternative port number for the web server
+    --reg-params <p> : extra parameters for the RegisterImage call
+    --run-params <p> : extra parameters for the RunInstances call
+    --size <s>       : total volume size in GiB; /boot is 1 GiB
+    --subnet <s>     : subnet ID for the started VPC instance
+    --system <s>     : e.g. "lucid-20101228" or "maverick/i386"
+    --type <t>       : instance type ("t1.micro", "m1.large", etc.)
+    --version        : display the date of this Encroot version
+    --vpc <v>        : Virtual Private Cloud; disambiguates addresses
+      domain         : DNS domain for decryption password entry
+.SH DESCRIPTION
+The \fBencroot\fR utility can be used to create new Amazon EC2 instances with
+encrypted root filesystems.  Simply encrypting everything is easier
+than dealing with separate encrypted volumes, and you can stop worrying
+about your secrets leaking through configuration or log files.
+
+For step-by-step instructions about using the script, please read the
+accompanying \fIREADME.txt\fR file.  This man page mostly serves as a way to
+document the more advanced options.
+
+However, the quick version is that you need a private \fI~/.awsapirc\fR file,
+as documented in the \fBawsapi\fR(1) man page, and your SSL certificate
+(\fIboot.crt\fR) and private key (\fIboot.key\fR) for the password entry page
+should be located in the current working directory.  After that, just
+follow the examples, but remember to allow HTTPS in the security group.
+.SH OPTIONS
+.TP
+.BI \-\-address= address
+Use the private \fIaddress\fR for a new VPC instance.
+If this option is repeated, extra network interfaces will be created.
+This can be used to create gateways between different subnets.
+You may not combine addresses with the \fB--subnet\fR option, since
+a subnet is given implicitly by each address, but you may have to
+use the \fB--vpc\fR option if the subnet is ambiguous.
+.TP
+.BI \-\-bootsize= size
+Size of boot partition in 512-byte blocks.  This overrides the
+default size, which is 1 GiB for normal and 2 GiB for big boot.
+.TP
+.BI \-\-big-boot
+Install a full Linux distro on /dev/xvda1 instead of just /boot.
+The Linux copy in the encrypted partition is entirely unchanged,
+which means that you may in principle replace it with any distro
+instead of being forced to run Ubuntu.  However, the kernel will
+still boot from the first partition, complicating maintenance.
+.TP
+.BI \-\-dedicated
+Start a dedicated instance, running on single-tenant hardware.
+Instances of this type can only be launched into a VPC.
+.TP
+.BI \-\-ebs-type= type
+The type of EBS volume to use for the instance.  The default is
+an ordinary magnetic ("standard") volume.  If you want SSD disks
+instead, you may specify "gp2" for General Purpose (SSD) volumes
+or "io1" for Provisioned IOPS (SSD) volumes.  Provisioned IOPS
+will also require a corresponding \fB--iops\fR argument.  More details
+can be found in the EC2 User Guide.
+.TP
+.BI \-\-fix-hook= hook
+An optional hook script that is used to fix things when a system
+doesn't look exactly like the main script expects.  It may also
+handle special configuration like installing extra packages.
+
+This hook is called as \fBroot\fR.  Its first argument is a code that
+indicates the current step in the process, since the hook will
+be called more than once.  The second argument is the root
+directory of the copied system image.
+
+At the moment, the following hook codes are used by Encroot:
+.TS
+;
+lb lb, l l.
+Code	Description
+init	Called on a copied system before making changes
+exit	Called when all ordinary changes have been made
+.TE
+
+If your hook script exits with a non-zero exit code, the main
+script will immediately release allocated resources and stop.
+.TP
+.BI \-\-group= group
+Add the security \fIgroup\fR, which may be specified by name or ID.
+The ID prefix is optional, so use "3bd535d7" for "sg-3bd535d7".
+You can use multiple security groups by repeating this option.
+Groups listed before the first \fB--address\fR option will be used on
+all network interfaces.  Otherwise, groups are applied to the
+interface associated with the preceding \fB--address\fR option.
+.TP
+.BI \-\-iops= iops
+The number of EBS I/O operations per second.  This is required
+for Provisioned IOPS (SSD) volumes.  At the time of writing, no
+other volume types can be combined with this option.
+.TP
+.BI \-\-key= key
+The name of an EC2 key pair for SSH connections.  The default is
+to use the same key pair as the build instance.
+.TP
+.BI \-\-name= name
+The name given to the new instance instead of a hopefully unique
+but boring default like "Linux_2013-06-17_16.51.49".
+.TP
+.BI \-\-no-color
+Remove colors, but keep bold text and fancy separator lines.
+You may need this option if you hate the choice of colors.
+.TP
+.BI \-\-no-fonts
+Remove differences between bold and thin fonts in the output.
+Depending on your terminal, these may show up as different fonts
+or different colors, so you can disable them if they look bad.
+.TP
+.BI \-\-no-lines
+Replace the default underscore lines with ASCII dashes, just in
+case somebody hates them.  Unlike the previous two options, it's
+difficult to see a good reason for this, but for completeness...
+.TP
+.BI \-\-no-style
+Remove VT100 escape codes from the output.  This is the shorter
+way to specify all of \fB--no-color --no-fonts --no-lines\fR at once
+to strip colors, bold text, and fancy separator lines for those
+people who prefer their output to be pure ASCII text.  ASCII is
+the default when standard output is not connected to a suitable
+terminal, but that should be a rare occurrence.  In other cases,
+you may still need this option if you hate the fancy styling.
+.TP
+.BI \-\-paravirtual
+Use paravirtual (PV) instead of hardware virtual machine (HVM)
+as the virtualization type.  HVM is the default except for T1,
+C1, M1, and M2 instance types, which do not support HVM.  Some
+other instance types will not support PV.  You only need this
+option if you know why you need it.
+.TP
+.BI \-\-port= port
+An alternative port for the password-entry web page.  The normal
+HTTPS port (443) is the default, but you may want to use another
+port to keep mere mortals away from it during reboots.  Remember
+to open the correct port in your security group as well.
+.TP
+.BI \-\-reg-params= parameters
+Extra request parameters for the RegisterImage call, as found in
+the EC2 API.  See \fBawsapi\fR(1) for a description of the format.
+These parameters are inserted first on the command line, so they
+will not override parameters added by the main script.  They may
+be useful to enable features that are not otherwise accessible.
+.TP
+.BI \-\-run-params= parameters
+Extra request parameters for the RunInstances call, as found in
+the EC2 API.  See \fBawsapi\fR(1) for a description of the format.
+These parameters are inserted first on the command line, so they
+will not override parameters added by the main script.  They may
+be useful to enable features that are not otherwise accessible.
+.TP
+.BI \-\-size= size
+Total volume size in GiB, of which 1 GiB is used for /dev/xvda1.
+.TP
+.BI \-\-subnet= subnet
+Launch the instance into the given subnet, where \fIsubnet\fR can be
+either the subnet ID or some CIDR notation like "10.0.0.0/24".
+If the latter is ambiguous, you may require the \fB--vpc\fR option.
+It is silly to use this option more than once; use \fB--address\fR
+instead if you want network interfaces in different subnets.
+.TP
+.bp
+.BI \-\-system= system
+The Linux distro to install, where \fIsystem\fR is a specific version,
+like "precise" or "raring".  Subversions of releases can also be
+used, such as "precise-20130411.1" or "raring-beta-2".  A 32-bit
+system is created by adding the suffix "/i386".
+
+The \fIsystem\fR spec can have one of the following prefixes:
+.TS
+;
+lb lb lb, l l l.
+Prefix	Example	Description
+debian-	debian-stretch	Debian "Stretch" (official AMI release)
+ubuntu-	ubuntu-xenial	Ubuntu "Xenial Xerus" (optional prefix)
+ami-	ami-2c886c44	Amazon Machine Image
+i-	i-2d872f7e	Amazon EC2 instance
+snap-	snap-04203ddb	Amazon EBS snapshot
+vol-	vol-7b91763e	Amazon EBS volume
+.TE
+
+If the \fIsystem\fR is given simply as "debian" or "ubuntu", a default
+version of them will be selected.  Currently, the version used is
+that mentioned in the table above.
+
+The "debian-" and "ubuntu-" prefixes are both optional.  Without
+the prefix, Encroot first looks for a matching Debian AMI, and
+then looks for Ubuntu on the web if no AMI was found.  It is not
+likely that these two distros will ever have a name collision.
+
+Finally, \fIsystem\fR may be a directory on the local machine, which
+could be a mounted system image, an unpacked system hierarchy,
+or simply the root directory of the build instance itself, if
+you want to make an encrypted clone of it.  However, unless you
+are forced to use this method, the latter scenario is probably
+better handled by stopping the instance to get a consistent
+clone based on its instance ID.  One thing that might force you
+is if your instance is based on an AWS Marketplace AMI, since
+that will prevent cloning even if the image is "sold" for free.
+.TP
+.BI \-\-type= type
+The instance type to use for the new instance.  The default is
+to use the same instance type as the build instance.  Read the
+"Instance Types" section in the EC2 User Guide for more info.
+.TP
+.BI \-\-version
+Display the date of this Encroot version (which is "Current")
+and exit without doing any further damage.
+.TP
+.BI \-\-vpc= vpc
+Use a specific Virtual Private Cloud, where \fIvpc\fR is the VPC ID.
+The ID prefix is optional, so use "37aaf90f" for "vpc-37aaf90f".
+You only need this option if you have more than one VPC and if
+the subnet ranges overlap.  Unambiguous addresses work anyway.
+.SH EXAMPLES
+To create a classic EC2 instance with external HTTPS access:
+
+    encroot --name "EC2 Instance" \\
+        --group "HTTPS Group" ec2-boot.example.com
+
+To do the same thing, but with Debian instead of Ubuntu:
+
+    encroot --name "EC2 Instance" --system debian \\
+        --group "HTTPS Group" ec2-boot.example.com
+
+To clone the build instance instead of creating from scratch:
+
+    encroot --name "EC2 Instance" --system / \\
+        --group "HTTPS Group" ec2-boot.example.com
+
+To create a VPC instance with the address selected by AWS:
+
+    encroot --name "VpcInstance1" \\
+        --subnet 10.0.0.0/24 vpc-boot.example.com
+
+To create an instance with two different subnets, where the groups used
+are those with group ID sg-b517c157 and name "default", respectively:
+
+    encroot --name "VpcInstance2" \\
+        --address 10.0.0.42 --group b517c157 \\
+        --address 10.0.1.42 vpc-boot.example.com
+
+To create an internal instance without public domain name:
+
+    encroot --name "InternalVpc1" \\
+        --address 10.0.1.41 ip-10-0-1-41.ec2.internal
+.SH FILES
+.TP 4
+\fI~/.awsapirc\fR - contains your AWS secrets.
+This file contains secret data.  It should only be accessible by the
+\fBawsapi\fR user, so remember to "chmod 600 ~/.awsapirc" before adding
+your keys.  All settings are given as lines of "name: value" pairs.
+The \fIsecretAccessKey\fR and \fIaccessKeyId\fR settings are required.
+.TP 4
+\fIboot.crt\fR - SSL certificate for the boot partition
+This certificate is used to authenticate the web page where you
+enter your decryption password.  External users should never access
+this page, so a self-signed internal certificate is OK.
+.TP 4
+\fIboot.key\fR - private SSL key for the boot partition
+This is the corresponding private key used by the web server.  Don't
+forget that this must be the decrypted version of the key.
+.TP 4
+\fI/var/cache/encroot/\fR - previously downloaded files
+Downloaded Ubuntu releases are stored in this directory to avoid
+unnecessary downloads in the future.  However, if updated versions
+of Ubuntu are released, you may need to delete some of these files
+to get rid of annoying SHA256 checksum failures.
+.SH BUGS
+Probably.
+.SH SEE ALSO
+https://aws.amazon.com/documentation/
+
+README.txt
+
+awsapi(1)
+.SH AUTHOR
+Henrik Gulbrandsen <henrik@gulbra.net>

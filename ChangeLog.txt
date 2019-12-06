@@ -1,0 +1,146 @@
+2018-01-21:
+ o Increased the length of dotted lines to handle longer resource IDs
+ o Updated PV-GRUB kernels from version 1.04 to 1.05 in all supported regions
+ o Added PV-GRUB kernels for Seoul, Mumbai, Canada, London, and Ohio
+ o Added name filter to speed up selection of platform AMI during test
+ o Added Seoul, Mumbai, Canada, London, and Ohio to the "regions" suite
+ o Started building bozohttpd from source code since the package was removed
+ o Updated partition selection to handle Debian AMIs with files in partition 2
+ o Updated to use conf-hook for configuration of new cryptsetup packages
+ o Fixed previously incorrect test index when individual tests are skipped
+ o Removed code introduced as special cases for obsolete distros
+ o Updated the EC2_API_VERSION to 2016-11-15 in encroot and test_encroot.sh
+ o Removed the obsolete "newtype" and "oldtype" test suites
+ o Changed the default version of Debian from 8 (Jessie) to 9 (Stretch)
+ o Changed the default version of Ubuntu from 14.04 (Trusty) to 16.04 (Xenial)
+ o Added "--bootsize" option to set an explicit size for the boot partition
+ o Doubled default size of the boot partition to 2 GiB for "Big Boot" systems
+ o Added support for systemd as a replacement for init in "Big Boot" systems
+ o Fixed "Big Boot" when the primary network interface has not been defined
+ o Added code to reinstall ifupdown package since Ubuntu switched to netplan
+ o Changed EC2_ENDPOINT for Chinese regions to end in ".com.cn"; Thanks, Paul!
+ o Corrected detection of fancy terminals by handling patterns like "xterm*"
+ o Fixed moving of the mounted boot partition with "mount --move" on Xenial
+ o Updated the recommended build platform to Ubuntu 16.04 LTS (Xenial Xerus)
+ o Made temporary instances launch in the target subnet since some need a VPC
+ o Added delay after launching instances to avoid InvalidInstanceID.NotFound
+ o Added delay after registering images to avoid InvalidAMIID.NotFound
+ o Fixed a bug that caused --version to always return the current date
+ o Skipped tests of 32-bit Artful on t2.micro due to a Linux boot problem
+ o Verified for Trusty, Xenial, Artful, Wheezy, Jessie, and Stretch
+ o Precise, Utopic, Vivid, and Squeeze have lost upstream support
+
+2015-05-28:
+ o Fixed lookup of subnets + groups when "vpc-ff068f90" is given as "ff068f90"
+ o Added support for hardware-based virtualization and made it the default
+ o Added "--paravirtual" option to keep the original virtualization type
+ o Started using the latest hd0 kernels instead of old hd00 AKI versions
+ o Added PV-GRUB kernel IDs for the eu-central-1 (Frankfurt) region
+ o Implemented signature version 4, needed in Frankfurt; Thank you, Chris!
+ o Updated the EC2_API_VERSION to 2015-03-01 in encroot and test_encroot.sh
+ o Added support for testing many different instance types in a test suite
+ o Made it possible to use ENCROOT_HOSTS instead of DNS for test addresses
+ o Starting testing Encroot with VPC instances in a separate test subnet
+ o Changed the default type of test instances from t1.micro to t2.micro
+ o Changed the default version of Debian from 7 (Wheezy) to 8 (Jessie)
+ o Added the AWSAPI_USER_AGENT environment variable to give some flexibility
+ o Changed "User-Agent" headers for Encroot to actually mention "Encroot"
+ o Made it possible to choose an alternative port for the password page
+ o Added "--ebs-type" and "--iops" options to simplify use of SSD volumes
+ o Made the "debian-" prefix optional, so "jessie" works like "debian-jessie"
+ o Updated awsapi to try again on temporary "Please try again shortly" errors
+ o Made the "debian" and "ubuntu" forms work correctly with "/i386" suffixes
+ o Tried to make unpacking and copying more robust by retrying on failure
+ o Updated and extended the release suite from 56 to 168 tested combinations
+ o Verified for Precise, Trusty, Utopic, Vivid, Squeeze, Wheezy, and Jessie
+ o Lucid, Quantal, Raring, and Saucy have lost upstream support
+
+2014-06-07:
+ o Added "--dedicated" option to run VPC instances on single-tenant hardware
+ o Fixed incorrect zone patterns for sa-east-1 and us-gov-west-1 kernel IDs
+ o Updated PV-GRUB kernel IDs from version 1.03 to 1.04 in all nine regions
+ o Made the changes needed for Ubuntu 14.04 LTS (Trusty Tahr)
+ o Updated the default target to Trusty Tahr (20140528)
+ o Added code to decrypt boot.key if the user forgets that step
+ o Allowed "system" to be specified as a local file hierarchy
+ o Allowed "system" to be an AMI, an instance, a snapshot, or an EBS volume
+ o Added support for Debian as an alternative to Ubuntu
+ o Added "--reg-params" option for extra parameters to the RegisterImage call
+ o Added "--run-params" option for extra parameters to the RunInstances call
+ o Updated the EC2_API_VERSION to 2014-02-01 in start_encrypted_instance.sh
+ o Added "--fix-hook" option for more flexible handling of various distros
+ o Allowed "system" to be "debian" or "ubuntu" with reasonable defaults
+ o Made the separators fancier; use --no-lines to get the old dashed ones
+ o Added bold (bright) and thin (dimmed) fonts; use --no-fonts to disable
+ o Added a little color to the output; use --no-color to get rid of it
+ o Added "--no-style" option to simplify "--no-color --no-fonts --no-lines"
+ o Updated the README.txt file to reflect current reality and new features
+ o Renamed "start_encrypted_instance.sh" to "encroot" for simplicity
+ o Renamed "make_encrypted_ubuntu.sh" to "make_encrypted_distro.sh"
+ o Made it possible to install Encroot with "./configure && make install"
+ o Added "--version" option to easily identify the installed Encroot version
+ o Added "--type" option for instance types different from the build instance
+ o Added "--key" option for key pairs other than that of the build instance
+ o Verified for Precise, Quantal, Raring, Saucy, Trusty, Squeeze, and Wheezy
+ o Oneiric has lost upstream support; Lucid depended on bozohttpd from Natty
+
+2013-06-20:
+ o Added a PATH check to avoid hiding /sbin/cryptsetup with our own script
+ o Added chmod to restore potentially lost executable permissions on scripts
+ o Updated the EC2_API_VERSION to 2013-02-01 in start_encrypted_instance.sh
+ o Changed groupSet; reservationSet.1.groupSet.1.groupId is not always there
+ o Added "--subnet" option for VPC instances; default is the build subnet
+ o Added "--address" option to set private IP addresses for a VPC instance
+ o Implemented support for multiple network interfaces in different subnets
+ o Allowed unlocking via a private address instead of requiring an Elastic IP
+ o Made it possible to repeat the --group option to configure multiple groups
+ o Fixed restoring of terminal echo after Ctrl-C on the password prompt
+ o Recommended the simpler "openssl rand -hex 16" for generation of passwords
+ o Added a minimal man page to document the behavior of all new script options
+ o Updated awsapi to allow empty default values to handle optional responses
+ o Changed awsapi to allow renaming to nothing; this is useful for filters
+ o Fixed awsapi bug where early values missing on a row were not added as '-'
+ o Fixed awsapi bug where object-list values would be reused in later lists
+ o Stopped replacing empty awsapi values with '-' in single-value expansions
+ o Fixed some other minor issues found in the previous awsapi implementation
+ o Verified for the current versions of Oneiric, Precise, Quantal, and Raring
+ o Natty has lost upstream support; Lucid depended on bozohttpd from Natty
+
+2013-05-01:
+ o Incorporated a patch by Jeff Finucane to give udevd time to react
+ o Made "awsapi --man" work better on FreeBSD by setting LESS="-R"
+ o Fixed a bug where awsapi would interpret "0" as a missing value
+ o Added the AWSAPI_FAILURE_COMMAND environment variable for flexibility
+ o Worked around the new "(stdin)= " prefix from "openssl dgst -sha1"
+ o Updated scripts to reflect the current location of Ubuntu Cloud Images
+ o Modified curl options to handle redirects to potential future locations
+ o Made the changes needed for Ubuntu 12.04.2 LTS (Precise Pangolin)
+ o Updated the default target to Precise Pangolin (20130411.1)
+ o Fixed handling of the URLs for alpha and beta versions of Ubuntu
+ o Fixed an obvious bug in the implementation of is_slow_reject()
+ o Updated with kernels for the nine currently available regions
+ o Fixed building of 32-bit systems on 64-bit instances ("precise/i386")
+ o Doubled delay before deleting snapshots since it could still fail
+ o Added a test_encroot.sh script to simplify the release process
+ o Verified for Lucid, Natty, Oneiric, Precise, Quantal, and Raring
+ o Maverick is now unsupported; Lucid will fail when Natty support ends
+
+2011-06-05:
+ o Made the scripts work outside the us-east-1 region; more thanks to drAX
+ o Added missing kernel IDs for the ap-northeast-1 (Tokyo) region
+ o Mounting with LABEL and UUID to avoid problems after a system upgrade
+ o Corrected the Maverick-specific entries added to sources.list on Lucid
+ o Added a workaround for the incorrect /initrd.img link in lucid-20110601
+ o Fixed problems with --big-boot for Xen block devices (major number 202)
+ o Adjusted incorrect progress info during boot partition copying (--big-boot)
+
+2011-05-21:
+ o Corrected bug where "--group=" was not stripped from "--group=$groupName"
+ o New library locations in Ubuntu 11.04; thanks to drAX for pointing it out
+ o Adapted to reality: Ubuntu 11.04 uses /dev/xvd* instead of /dev/sd*
+ o Added "--size" option to set the volume size; default is 8 GiB, as before
+ o Added "--name" option for the instance name; default is Linux_<date>_<time>
+ o Added a delay before deleting the snapshot of a recently deregistered image
+
+2011-04-18:
+ o Original release

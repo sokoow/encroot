@@ -1,0 +1,1466 @@
+#!/bin/sh
+###############################################################################
+# This script is used to start an encrypted EBS-backed system for Amazon EC2. #
+# It uses the EC2 API, and calls make_encrypted_distro.sh to create a system. #
+#                                                                             #
+# Tested with ami-41e0b93b (64-bit EBS us-east-1 - Ubuntu 16.04 LTS)          #
+# See https://help.ubuntu.com/community/UEC/Images for info on Ubuntu images. #
+# Xenial Xerus: https://cloud-images.ubuntu.com/releases/xenial/release/      #
+#                                                                             #
+###############################################################################
+#                                                                             #
+# Copyright (c) 2011, 2013-2015, 2018 Henrik Gulbrandsen <henrik@gulbra.net>  #
+#                                                                             #
+# This software is provided 'as-is', without any express or implied warranty. #
+# In no event will the authors be held liable for any damages arising from    #
+# the use of this software.                                                   #
+#                                                                             #
+# Permission is granted to anyone to use this software for any purpose,       #
+# including commercial applications, and to alter it and redistribute it      #
+# freely, subject to the following restrictions:                              #
+#                                                                             #
+# 1. The origin of this software must not be misrepresented; you must not     #
+#    claim that you wrote the original software. If you use this software     #
+#    in a product, an acknowledgment in the product documentation would be    #
+#    appreciated but is not required.                                         #
+#                                                                             #
+# 2. Altered source versions must be plainly marked as such, and must not be  #
+#    misrepresented as being the original software.                           #
+#                                                                             #
+# 3. This notice may not be removed or altered from any source distribution,  #
+#    except that more "Copyright (c)" lines may be added to already existing  #
+#    "Copyright (c)" lines if you have modified the software and wish to make #
+#    your changes available under the same license as the original software.  #
+#                                                                             #
+###############################################################################
+
+VERSION="Current"
+exitValue=1
+set -e
+
+### Options ###################################################################
+
+no_color=false
+no_fonts=false
+no_lines=false
+no_style=false
+paravirtual=false
+instanceName=$(date "+Linux_%F_%H.%M.%S")
+tenancy="default"
+volumeSize="8"
+bigBoot=false
+bootSize="default"
+ebsType="standard"
+fixHook=""
+regParams=""
+runParams=""
+options=""
+addressList=""
+groupList=""
+subnet=""
+system=""
+iops=""
+port=""
+type=""
+key=""
+vpc=""
+
+is_ip_address() {
+    local address="$1"
+    local x
+
+    for x in $(echo $address | tr "." " "); do
+        if ! [ "$x" -ge 0 -a "$x" -le 255 ] 2> /dev/null; then
+            return 1
+        fi
+    done
+
+    return 0
+}
+
+is_ip_network() {
+    local network="${1%/*}"
+    local netmask="${1##*/}"
+
+    if ! is_ip_address "$network"; then
+        return 1
+    fi
+
+    # This is the range currently supported for EC2...
+    if ! [ "$netmask" -ge 16 -a "$netmask" -le 28 ] 2> /dev/null; then
+        return 1;
+    fi
+
+    return 0
+}
+
+add_address() {
+    local address="$1"
+
+    if ! is_ip_address $address; then
+        echo "Invalid IP address: \"$address\""
+        exit 1
+    fi
+
+    addressList="${addressList:+$addressList }$address"
+    groupList="$groupList;"
+}
+
+add_group() {
+    local group="$1"
+
+    if [ -n "$(echo $group | tr -d '[:alnum:] .-_]')" ]; then
+        echo "Invalid group name: \"$group\""
+        exit 1
+    fi
+
+    if [ -n "${groupList##*;}" ]; then
+        groupList="${groupList},"
+    fi
+
+    groupList="${groupList}${group}"
+}
+
+set_subnet() {
+    if [ -n "$subnet" ]; then
+        echo "Only one --subnet option is allowed; use --address instead!"
+        exit 1
+    fi
+
+    subnet="$1"
+}
+
+# This is probably more informative
+if [ "$VERSION" = 'Current' ]; then
+    VERSION=$(date "+%F")
+fi
+
+while [ "${1#-}" != "$1" ]; do
+    case $1 in
+        --big-boot) bigBoot=true; shift;;
+        --bootsize) bootSize="$2"; shift 2;;
+        --bootsize=*) bootSize="${1#--bootsize=}"; shift;;
+        --dedicated) tenancy="dedicated"; shift;;
+        --no-color) no_color=true; shift;;
+        --no-fonts) no_fonts=true; shift;;
+        --no-lines) no_lines=true; shift;;
+        --no-style) no_style=true; shift;;
+        --version) echo "$VERSION"; exit 0;;
+        --address) add_address "$2"; shift 2;;
+        --address=*) add_address "${1#--address=}"; shift;;
+        --ebs-type) ebsType="$2"; shift 2;;
+        --ebs-type=*) ebsType="${1#--ebs-type=}"; shift;;
+        --fix-hook) fixHook="$2"; shift 2;;
+        --fix-hook=*) fixHook="${1#--fix-hook=}"; shift;;
+        --group) add_group "$2"; shift 2;;
+        --group=*) add_group "${1#--group=}"; shift;;
+        --iops) iops="$2"; shift 2;;
+        --iops=*) iops="${1#--iops=}"; shift;;
+        --key) key="$2"; shift 2;;
+        --key=*) key="${1#--key=}"; shift;;
+        --name) instanceName="$2"; shift 2;;
+        --name=*) instanceName="${1#--name=}"; shift;;
+        --paravirtual) paravirtual=true; shift;;
+        --port) port="$2"; shift 2;;
+        --port=*) port="${1#--port=}"; shift;;
+        --reg-params) regParams="$2"; shift 2;;
+        --reg-params=*) regParams="${1#--reg-params=}"; shift;;
+        --run-params) runParams="$2"; shift 2;;
+        --run-params=*) runParams="${1#--run-params=}"; shift;;
+        --size) volumeSize="$2"; shift 2;;
+        --size=*) volumeSize="${1#--size=}"; shift;;
+        --subnet) set_subnet "$2"; shift 2;;
+        --subnet=*) set_subnet "${1#--subnet=}"; shift;;
+        --system) system="$2"; shift 2;;
+        --system=*) system="${1#--system=}"; shift;;
+        --type) type="$2"; shift 2;;
+        --type=*) type="${1#--type=}"; shift;;
+        --vpc) vpc="$2"; shift 2;;
+        --vpc=*) vpc="${1#--vpc=}"; shift;;
+        -*) echo "Invalid option: $1"; exit 1;;
+        *) break;;
+    esac
+done
+
+### Colors & Separators (duplicated code) #####################################
+
+BOLD="1" # Bright text
+THIN="2" # Dimmed text
+LINE="4" # Underscores
+
+NORMAL="39;0"
+BOLD_RED="31;1"
+BOLD_GREEN="32;1"
+BOLD_YELLOW="33;1"
+BOLD_BLUE="34;1"
+BOLD_MAGENTA="35;1"
+BOLD_CYAN="36;1"
+
+fancyTerminal=false;
+
+# Check if the current terminal can handle color
+if [ -n "${TERM}" ]; then
+    for term in $(dircolors -p | grep "^TERM" | awk '{print $2}'); do
+        if [ -z "${TERM#$term}" ]; then fancyTerminal=true; break; fi
+    done
+fi
+
+# Use fancy output if it looks like the terminal can handle it
+if ! $no_style && [ -t 1 ] && $fancyTerminal; then
+    fancy=true
+else
+    fancy=false
+fi
+
+# Fancy output comes with a nice underline separator
+if $fancy && ! $no_lines; then
+    separator="$(printf '\033[4m%79s\033[0m' '')"
+else
+    separator="$(printf '%79s' '' | tr ' ' '-')"
+fi
+
+print_separator() {
+    printf "%s\n\n" "$separator"
+}
+
+set_display_mode() {
+    local mode="$1"
+
+    case $mode in
+        $BOLD) if $no_fonts; then return; fi;;
+        $THIN) if $no_fonts; then return; fi;;
+        $LINE) if $no_lines; then return; fi;;
+        $NORMAL) ;;
+        *) if $no_color; then return; fi
+           if $no_fonts; then mode="${mode%;1}"; fi
+    esac
+
+    if $fancy; then command printf "\033[${mode}m"; fi
+}
+
+print_header() {
+    echo; print_separator;
+    perl -e 'print " "x(40-length($ARGV[0])/2)' "$1";
+    set_display_mode "$BOLD"
+    set_display_mode "$LINE"
+    printf "$1\n\n"
+    set_display_mode "$NORMAL"
+    echo
+}
+
+### Unique VT100 code #########################################################
+
+# Remember to tell our subscript
+if $no_color; then options="$options --no-color"; fi
+if $no_fonts; then options="$options --no-fonts"; fi
+if $no_lines; then options="$options --no-lines"; fi
+if $no_style; then options="$options --no-style"; fi
+
+colorize() {
+    local cmd="$1"; shift
+
+    case "$1" in
+        ami-*|i-*|snap-*|vol-*)
+            mode="$BOLD_BLUE";;
+        /dev/*|*%|available|invisible)
+            mode="$BOLD_MAGENTA";;
+        done)
+            mode="$BOLD_GREEN";;
+        *) mode="";;
+    esac
+
+    if [ -n "$mode" ]; then
+        set_display_mode "$mode"
+    fi
+
+    command $cmd "$@"
+
+    if [ -n "$mode" ]; then
+        set_display_mode "$NORMAL"
+    fi
+}
+
+echo() {
+    colorize echo "$@"
+}
+
+printf() {
+    colorize printf "$@"
+}
+
+### Basic checks ##############################################################
+
+SUDO="$(which sudo)"
+domain=$1
+
+if [ -z "$domain" ]; then
+    echo "Usage: ${0##*/} [<options>] <domain>"
+    echo " --address <a>    : private IP address; use once per interface"
+    echo " --bootsize       : size of boot partition in 512-byte blocks"
+    echo " --big-boot       : full system on /dev/xvda1, not just /boot"
+    echo " --dedicated      : use single-tenant hardware (only with VPC)"
+    echo " --ebs-type <t>   : EBS volume type; use \"gp2\" or \"io1\" for SSD"
+    echo " --fix-hook <h>   : hook script to fix distro-specific things"
+    echo " --group <g>      : security group; use once per required group"
+    echo " --iops <i>       : number of EBS I/O operations per second"
+    echo " --key <k>        : name of an SSH key pair for the instance"
+    echo " --name <n>       : name of the instance; default is Linux_*"
+    echo " --no-color       : remove all annoying colors from the output"
+    echo " --no-fonts       : remove bold and thin fonts from the output"
+    echo " --no-lines       : replace underscore lines with ASCII dashes"
+    echo " --no-style       : remove VT100 escape codes from the output"
+    echo " --paravirtual    : use paravirtual virtualization instead of HVM"
+    echo " --port <p>       : alternative port number for the web server"
+    echo " --reg-params <p> : extra parameters for the RegisterImage call"
+    echo " --run-params <p> : extra parameters for the RunInstances call"
+    echo " --size <s>       : total volume size in GiB; /boot is 1 GiB"
+    echo " --subnet <s>     : subnet ID for the started VPC instance"
+    echo " --system <s>     : e.g. \"lucid-20101228\" or \"maverick/i386\""
+    echo " --type <t>       : instance type (\"t1.micro\", \"m1.large\", etc.)"
+    echo " --version        : display the date of this Encroot version"
+    echo " --vpc <v>        : Virtual Private Cloud; disambiguates addresses"
+    echo "   domain         : DNS domain for decryption password entry"
+    exit 1
+fi
+
+# Set a default size for the boot partition
+if [ "$bootSize" = "default" ]; then
+    if $bigBoot; then
+        bootSize="4194304"; # 2 GiB to fit a full system
+    else
+        bootSize="2097152"; # 1 GiB to keep old default
+    fi
+fi
+
+# Find the application directory
+home="$(dirname $(readlink -f $0))"
+
+if [ ! -e "$home/make_encrypted_distro.sh" ]; then
+    echo "Missing file: make_encrypted_distro.sh - system creation script"
+    exit 1
+fi
+
+# Things get really confusing if these conflict
+if [ -n "$subnet" ] && [ -n "$addressList" ]; then
+    echo "You can specify either subnet or addresses, but not both"
+    exit 1
+fi
+
+# A VPC conflicting with an implicit subnet would also be weird
+if [ -n "$vpc" ] && [ -z "$subnet" ] && [ -z "$addressList" ]; then
+    echo "The --vpc option must be used with subnet or addresses"
+    exit 1
+fi
+
+# Some extra options may only be used for VPC instances
+if [ -z "$vpc" ] && [ -z "$subnet" ] && [ -z "$addressList" ]; then
+    if [ "$tenancy" = "dedicated" ]; then
+        echo "The --dedicated option only works for VPC instances"
+        exit 1
+    fi
+fi
+
+# Give an early warning if IOPS is left undefined
+if [ "$ebsType" = "io1" ] && [ -z "$iops" ]; then
+    echo "The --iops option must be used for $ebsType volumes"
+    exit 1
+fi
+
+# Do some minimal validation of the boot size
+if [ "$bootSize" -le 0 ] 2> /dev/null; then
+    echo "The boot size must be a positive integer."
+    exit 1
+fi
+
+# Do some minimal validation of the volume size
+if [ "$size" -le 0 ] 2> /dev/null; then
+    echo "The volume size must be a positive integer."
+    exit 1
+fi
+
+# Boot size is in 512-byte blocks and volume size in GiB
+if [ "$bootSize" -ge "$((volumeSize*2097152))" ]; then
+    echo "Boot size must be less than total volume size."
+    exit 1
+fi
+
+# Pass --big-boot to the subscript
+if $bigBoot; then
+    options="$options --big-boot"
+fi
+
+# Pass size of boot partition to the subscript
+if [ -n "$bootSize" ]; then
+    options="$options --bootsize=\"$bootSize\""
+fi
+
+# Add our optional hook script to the options
+if [ -n "$fixHook" ]; then
+    options="$options --fix-hook=\"$fixHook\""
+fi
+
+# Add the optional port number
+if [ -n "$port" ]; then
+    options="$options --web-port=\"$port\""
+fi
+
+# Validate with "eval" to correctly expand quoted strings in $options
+eval '$SUDO "$home/make_encrypted_distro.sh"' --validate$options
+
+### Initialization ############################################################
+
+dots() {
+    set_display_mode "$BOLD"
+    perl -e 'print $ARGV[0], "."x(45-length($ARGV[0])), "... "' "$*";
+
+    if $no_color; then
+        set_display_mode "$NORMAL"
+    else
+        set_display_mode "$BOLD_RED"
+    fi
+}
+
+wait_for_consistency() {
+    local delay=1
+
+    # Exponential backoff for Eventual Consistency...
+    while awsapi ec2.Describe${1}s ${1}Id="$2" 2>&1 | grep -q NotFound; do
+        if [ "${delay}" -ge 256 ]; then break; fi
+        delay=$((2*delay))
+        sleep $delay;
+    done
+}
+
+# Time to take responsibility for the requests...
+userAgent="Encroot/$VERSION"
+options="$options --my-agent=$userAgent"
+export AWSAPI_USER_AGENT="$userAgent"
+
+# Prepare things for EC2 operations
+export EC2_API_VERSION="2016-11-15"
+ORIGINAL_AWSAPI_FILE_DIR="$AWSAPI_FILE_DIR"
+METADATA=http://169.254.169.254/latest/meta-data
+PATH="$home:$PATH"
+
+# Figure out which availability zone we're in and set the endpoint
+zone=$(curl -A "$userAgent" -s "$METADATA/placement/availability-zone")
+export EC2_ENDPOINT="https://ec2.${zone%?}.amazonaws.com/"
+
+# The URLs of Chinese AWS regions typically end in ".com.cn"
+if [ -z "${zone##cn-*}" ]; then
+    EC2_ENDPOINT="${EC2_ENDPOINT%/}.cn/"
+fi
+
+# Describe the instance we're running on
+workInstance=$(curl -A "$userAgent" -s "$METADATA/instance-id")
+$(awsapi ec2.DescribeInstances InstanceId.1=$workInstance \
+    reservationSet.1.{ \
+        instancesSet.1.{ \
+            buildSubnet:subnetId or "", \
+            group:groupSet.1.groupId, \
+            keyName, instanceType, \
+            arch:architecture \
+        } \
+    } \
+)
+
+# Use defaults from the build instance if necessary
+if [ -z "$type" ]; then type="$instanceType"; fi
+if [ -z "$key" ]; then key="$keyName"; fi
+
+# If the --paravirtual option was given:
+if $paravirtual; then
+
+    # Warn early if a given instance type is known to require HVM
+    case $type in c4.*|c5.*|d2.*|f1.*|g2.*|g3.*|h1.*|i2.*|i3.*| \
+                  m4.*|m5.*|p2.*|p3.*|r3.*|r4.*|t2.*|x1.*)
+        echo "Instances of type '$type' cannot be paravirtual"
+        exit 1;;
+    esac
+
+else
+
+    # Use paravirtual by default if HVM is not supported
+    case $type in t1.*|c1.*|m1.*|m2.*)
+        paravirtual=true;;
+    esac
+
+fi
+
+# Use a 32-bit architecture if the user explicitly requires it
+if [ "${system%/i386}" != "$system" ]; then
+    arch="i386"
+fi
+
+# Select a kernel suitable for this architecture and region
+case $arch in
+    i386)
+        case $zone in
+            ap-northeast-1?) kernelId="aki-f975a998";; # Tokyo
+            ap-northeast-2?) kernelId="aki-b36db8dd";; # Seoul
+            ap-south-1?)     kernelId="aki-0a364265";; # Mumbai
+            ap-southeast-1?) kernelId="aki-17a40074";; # Singapore
+            ap-southeast-2?) kernelId="aki-ba5665d9";; # Sydney
+            ca-central-1?)   kernelId="aki-d402b0b0";; # Central Canada
+            eu-central-1?)   kernelId="aki-1419e57b";; # Frankfurt
+            eu-west-1?)      kernelId="aki-1c9fd86f";; # Ireland
+            eu-west-2?)      kernelId="aki-e6f6fc82";; # London
+            sa-east-1?)      kernelId="aki-7cd34110";; # São Paulo
+            us-east-1?)      kernelId="aki-04206613";; # Northern Virginia
+            us-east-2?)      kernelId="aki-ebfda68e";; # Ohio
+            us-gov-west-1?)  kernelId="aki-5ee9573f";; # AWS GovCloud (US)
+            us-west-1?)      kernelId="aki-43cf8123";; # Northern California
+            us-west-2?)      kernelId="aki-7a69931a";; # Oregon
+            *) echo "Unknown zone: $zone"; exit 1;
+        esac;;
+    x86_64)
+        case $zone in
+            ap-northeast-1?) kernelId="aki-7077ab11";; # Tokyo
+            ap-northeast-2?) kernelId="aki-a961b4c7";; # Seoul
+            ap-south-1?)     kernelId="aki-f033479f";; # Mumbai
+            ap-southeast-1?) kernelId="aki-73a50110";; # Singapore
+            ap-southeast-2?) kernelId="aki-66506305";; # Sydney
+            ca-central-1?)   kernelId="aki-e219ab86";; # Central Canada
+            eu-central-1?)   kernelId="aki-931fe3fc";; # Frankfurt
+            eu-west-1?)      kernelId="aki-dc9ed9af";; # Ireland
+            eu-west-2?)      kernelId="aki-ebf4fe8f";; # London
+            sa-east-1?)      kernelId="aki-912fbcfd";; # São Paulo
+            us-east-1?)      kernelId="aki-5c21674b";; # Northern Virginia
+            us-east-2?)      kernelId="aki-eff7ac8a";; # Ohio
+            us-gov-west-1?)  kernelId="aki-9ee55bff";; # AWS GovCloud (US)
+            us-west-1?)      kernelId="aki-59cc8239";; # Northern California
+            us-west-2?)      kernelId="aki-70cb0e10";; # Oregon
+            *) echo "Unknown zone: $zone"; exit 1;
+        esac;;
+    *) echo "Unknown arch: $arch"; exit 1;
+esac
+
+### Prepare subnets ###########################################################
+
+vpc_filter=""
+params=""
+
+# Allow "--vpc ff068f90" instead of "--vpc vpc-ff068f90"
+if echo $vpc | grep -E "^[[:xdigit:]]{8}$" > /dev/null; then
+    vpc="vpc-$vpc"
+fi
+
+# Only use subnets that belong to the VPC
+if [ -n "$vpc" ]; then
+    vpc_filter="Filter.0.Name=vpc-id Filter.0.Value=$vpc"
+fi
+
+# Allow "--subnet c6169fa9" instead of "--subnet subnet-c6169fa9"
+if echo $subnet | grep -E "^[[:xdigit:]]{8}$" > /dev/null; then
+    subnet="subnet-$subnet"
+fi
+
+# Allow "--subnet 10.0.0.0/24" instead of "--subnet c6169fa9"
+if is_ip_network "$subnet"; then
+
+    # List all subnets that match the CIDR notation
+    $(awsapi ec2.DescribeSubnets $vpc_filter \
+        Filter.1.Name=cidr Filter.1.Value="$subnet" \
+        subnetList:subnetSet.n.subnetId)
+
+    # There can be only one
+    for subnetId in $subnetList; do
+        if [ "$subnetId" = "$subnetList" ]; then
+            subnet="$subnetId"
+        else
+            echo "Ambiguous subnet $subnet; use the --vpc option!"
+            exit 1
+        fi
+    done
+fi
+
+# Option 1: one or more addresses with implicit subnets
+if [ -n "$addressList" ]; then
+
+    # Get a list of all suitable subnets
+    $(awsapi ec2.DescribeSubnets net+subnetSet.n.{ \
+        $vpc_filter vpcId, subnetId, cidrBlock \
+    })
+
+# Option 2: a subnet with the address selected by AWS
+else
+
+    # Use the build subnet by default
+    if [ -z "$subnet" ]; then
+        subnet="$buildSubnet"
+    fi
+
+    # If we have a subnet now:
+    if [ -n "$subnet" ]; then
+
+        # Add the subnet and remember the VPC
+        params="$params SubnetId=$subnet"
+        $(awsapi ec2.DescribeSubnets SubnetId="$subnet" \
+            subnetSet.1.vpcId)
+
+        # Complain if the --vpc option conflicts with our subnet
+        if [ -n "$vpc" ] && [ "$vpc" != "$vpcId" ]; then
+            echo "Conflicting VPC; ${vpc#vpc-} != ${vpcId#vpc-}"
+            exit 1
+        else
+            vpc="$vpcId"
+        fi
+
+    fi
+
+fi
+
+check_default_route() {
+    local ipAddress routeTableId
+
+    # Only care if we are using a VPC
+    if [ -z "$vpc" ]; then return; fi
+
+    # Check how the instance was configured
+    $(awsapi ec2.DescribeInstances InstanceId.1=$instanceId \
+        reservationSet.1.instancesSet.1.ipAddress or "")
+
+    # Only care if we have a public IP address
+    if [ -z "$ipAddress" ]; then return; fi
+
+    # Check if the VPC has a default route
+    $(awsapi ec2.DescribeRouteTables \
+        Filter.1.{ Name=vpc-id, Value.1="$vpc" } \
+        Filter.2.{ Name=route.destination-cidr-block, Value.1="0.0.0.0/0" } \
+        routeTableSet.1.routeTableId or "missing")
+
+    # It took me a while to find the error when I did this...
+    if [ "$routeTableId" = "missing" ]; then
+        set_display_mode "$BOLD_RED"
+        echo; printf "Warning: "
+        set_display_mode "$NORMAL"
+        echo "You have a public IP address but no default route on the VPC."
+        echo "         That will make it hard to unlock the Encroot server."
+    fi
+}
+
+### Security Group Handling ###################################################
+
+groupIndex=1
+
+add_group_params() {
+    local groupList="$1"
+    local prefix="$2"
+    local group groupId
+
+    # Split the comma-separated $groupList into $@
+    IFS=","; set -- $groupList; unset IFS;
+
+    # For each group in the list:
+    for group in "$@"; do
+
+        # Allow "--group fc02f495" instead of "--group sg-fc02f495"
+        if echo $group | grep -E "^[[:xdigit:]]{8}$" > /dev/null; then
+            group="sg-$group"
+        fi
+
+        # If it doesn't look like an ID, interpret it as a name
+        if ! echo $group | grep -E "^sg-[[:xdigit:]]{8}$" > /dev/null; then
+
+            # Look up the group ID for that name (extra filter for non-vpc)
+            $(awsapi ec2.DescribeSecurityGroups $vpc_filter \
+                Filter.1.Name=group-name Filter.1.Value="$group" \
+                sg+securityGroupInfo.n.{ groupId, vpcId eq "$vpc" })
+
+            # Complain if it fails
+            if [ -z "$sgList" ]; then
+                printf "No group named \"$group\" exists for EC2-"
+                if [ -n "$vpc" ]; then echo "VPC ${vpc#vpc-}"
+                else echo "Classic"; fi
+                exit 1
+            fi
+
+            # Use the ID if it works
+            group="$(sg.groupId)"
+        fi
+
+        # Add this group ID to the list of parameters
+        params="$params ${prefix}SecurityGroupId.$groupIndex=$group"
+        groupIndex=$((groupIndex+1))
+
+    done
+}
+
+### Prepare interfaces ########################################################
+
+index=0
+
+# Prints the first $count bits of $ipAddress as a binary string
+print_ip_bits() {
+    local ipAddress="$1" count="$2"
+    perl -e 'print unpack "B'$count'", pack"C*", split/\./,"'$ipAddress'"'
+}
+
+# address_in_subnet "10.0.0.42" "10.0.0.0/24" should be true
+address_in_subnet() {
+    set "$1" $(echo "$2" | tr "/" " ")
+    local address="$1" network="$2" count="$3"
+
+    address=$(print_ip_bits $address $count)
+    network=$(print_ip_bits $network $count)
+    [ "$address" = "$network" ]
+}
+
+# Extract the instance groups
+instanceGroups="${groupList%%;*}"
+groupList="${groupList#*;}"
+
+# EC2-Classic and EC2-VPC without explicit addresses
+if [ -z "$addressList" ]; then
+    add_group_params "$instanceGroups"
+    if [ -n "$subnet" ]; then
+        params="$params SubnetId=$subnet"
+    fi
+fi
+
+# For each private IP address:
+for address in $addressList; do
+    subnet=""
+
+    # Try to find a unique subnet that works
+    for net in $netList; do
+        if address_in_subnet "$address" "$(net.cidrBlock)"; then
+            if [ -z "$subnet" ]; then
+                subnet="$(net.subnetId)"
+                vpcId="$(net.vpcId)"
+            else
+                echo "Ambiguous subnet for $address; use the --vpc option!"
+                exit 1
+            fi
+        fi
+    done
+
+    # Abort if no subnet is good enough
+    if [ -z "$subnet" ]; then
+        echo "No existing subnet includes $address; please create one!"
+        exit 1
+    fi
+
+    # Once we have a VPC, all subnets should belong to it
+    if [ -z "$vpc" ]; then
+        vpc="$vpcId"
+    elif [ "$vpcId" != "$vpc" ]; then
+        echo "The addresses belong to different VPCs"
+        exit 1
+    fi
+
+    # Extract the interface groups
+    interfaceGroups="${groupList%%;*}"
+    groupList="${groupList#*;}"
+
+    # Add groups and private IP addresses
+    add_group_params "$instanceGroups" "NetworkInterface.$index."
+    add_group_params "$interfaceGroups" "NetworkInterface.$index."
+    params="$params NetworkInterface.$index.{ \
+        DeviceIndex=$index, SubnetId=$subnet, \
+        PrivateIpAddresses.1.{ \
+            PrivateIpAddress=$address, \
+            Primary=true \
+        } \
+    }"
+
+    index=$((index+1))
+
+done
+
+# Remember to update /etc/network/interfaces
+if [ "$index" -gt 1 ]; then
+    options="$options --if-count=$index"
+fi
+
+### Domain Validation #########################################################
+
+public=true
+
+# Try to get an IP address for the domain
+if ! is_ip_address "$domain"; then
+    ipAddress=$(dig +short $domain | tail -1)
+else
+    ipAddress="$domain"
+fi
+
+# Complain if that fails
+if [ -z "$ipAddress" ]; then
+    echo "No IP address found for $domain"
+    exit 1
+fi
+
+# See if it's our private address
+for address in $addressList; do
+    if [ "$address" = "$ipAddress" ]; then
+        public=false; break
+    fi
+done
+
+# For public addresses:
+if $public; then
+
+    # Get some information about the address
+    $(awsapi ec2.DescribeAddresses \
+        Filter.1.Name=public-ip Filter.1.Value.1="$ipAddress" \
+        addressesSet.1.{ \
+            addressType:domain or "", \
+            allocationId or "" \
+        } \
+    )
+
+    # Make error messages less redundant
+    if [ "$domain" != "$ipAddress" ]; then
+        addressText="for $domain ($ipAddress)"
+    else
+        addressText="($ipAddress)"
+    fi
+
+    if [ -z "$addressType" ]; then
+        echo "Invalid IP address $addressText"
+        echo "That is not an Elastic IP!"
+        exit 1
+    fi
+
+    # Abort if this is a VPC instance but the address is standard
+    if [ -n "$vpc" ] && [ "$addressType" != "vpc" ]; then
+        echo "Invalid IP address $addressText"
+        echo "That is not a VPC-compatible Elastic IP!"
+        exit 1
+    fi
+
+    # Abort if this is EC2 Classic but the address is for VPC
+    if [ -z "$vpc" ] && [ "$addressType" = "vpc" ]; then
+        echo "Invalid IP address $addressText"
+        echo "That address only works for VPC instances!"
+        exit 1
+    fi
+
+fi
+
+### Cleanup Code ##############################################################
+
+# Just in case...
+unset imageId
+unset instanceId
+unset snapshotId
+unset volumeId
+
+unset createdSourceVolume
+unset attachedSourceVolume
+unset systemDirectory
+unset sourceImageId
+
+detach_volume() {
+    local volumeId="$1"
+    local status
+
+    # Check if the volume is attached
+    $(awsapi ec2.DescribeVolumes VolumeId.1=$volumeId volumeSet.1.status)
+
+    # If so, detach the volume
+    if [ "$status" = "in-use" ]; then
+        dots "Detaching volume $volumeId"
+        $(awsapi ec2.DetachVolume VolumeId=$volumeId)
+        $(awsapi ec2.DescribeVolumes VolumeId.1=$volumeId \
+            volumeSet.1.status := in-use/available)
+        echo "done"
+    fi
+}
+
+delete_volume() {
+    local volumeId="$1"
+
+    # Detach the volume if necessary
+    detach_volume "$volumeId"
+
+    # Delete the volume
+    dots "Deleting volume $volumeId"
+    $(awsapi ec2.DeleteVolume VolumeId=$volumeId return := true)
+    echo "done"
+}
+
+remove_source_volume() {
+
+    # Unmount the attached source volume
+    if [ -n "$attachedSourceVolume" ]; then
+        $SUDO umount -l "$systemDirectory" || true
+        detach_volume "$attachedSourceVolume"
+        unset attachedSourceVolume
+        rmdir "$systemDirectory"
+        unset systemDirectory
+    fi
+
+    # Delete any temporary source volume
+    if [ -n "$createdSourceVolume" ]; then
+        delete_volume "$createdSourceVolume"
+        unset createdSourceVolume
+    fi
+}
+
+terminate_instance() {
+    if [ -n "$instanceId" ]; then
+        dots "Terminating instance $instanceId"
+        $(awsapi ec2.TerminateInstances InstanceId.1=$instanceId)
+        $(awsapi ec2.DescribeInstances InstanceId.1=$instanceId \
+            reservationSet.1.instancesSet.1.instanceState.name \
+                := shutting-down/terminated)
+        echo "done"; unset instanceId
+    fi
+}
+
+delete_snapshot() {
+    if [ -n "$snapshotId" ]; then
+        dots "Deleting snapshot $snapshotId"; sleep 10
+        $(awsapi ec2.DeleteSnapshot SnapshotId=$snapshotId return := true)
+        echo "done"; unset snapshotId
+    fi
+}
+
+cleanup() {
+    trap "" INT  # Ignore a second Ctrl-C
+    trap - 0     # No recursion on exit
+
+    # An ordinary exit should normally be clean, so skip the message
+    if [ "$exitValue" != 0 ]; then
+        set_display_mode "$NORMAL"
+        echo; print_header "Cleaning for encroot"
+    fi
+
+    # Terminate the instance
+    terminate_instance;
+
+    # Deregister the image
+    if [ -n "$imageId" ]; then
+        dots "Deregistering image $imageId"
+        $(awsapi ec2.DeregisterImage ImageId=$imageId return := true)
+        echo "done"; unset imageId
+    fi
+
+    # Delete the snapshot
+    delete_snapshot;
+
+    # Delete the target volume
+    if [ -n "$volumeId" ]; then
+        delete_volume "$volumeId"
+        unset volumeId
+    fi
+
+    # Remove the source volume
+    remove_source_volume;
+
+    # We must handle this, since we're overriding the awsapi cleanup
+    if [ "$AWSAPI_FILE_DIR" != "$ORIGINAL_AWSAPI_FILE_DIR" ]; then
+        rm -rf "$AWSAPI_FILE_DIR"
+    fi
+
+    echo; exit $exitValue
+}
+
+clean_exit() {
+    set_display_mode "$NORMAL"
+    exit $1
+}
+
+### Volumes and Snapshots #####################################################
+
+attach_volume() {
+    local volumeId="$1"
+    local xdev second
+
+    # External device names are always /dev/sd*, not /dev/xvd*
+    xdev="${dev#/dev/xvd}"
+    if [ "$xdev" != "${dev}" ]; then
+        xdev="/dev/sd${xdev}"
+    fi
+
+    # Attempt to attach the volume
+    $(awsapi ec2.AttachVolume VolumeId=$volumeId \
+        InstanceId=$workInstance Device=$xdev)
+    $(awsapi ec2.DescribeVolumes VolumeId.1=$volumeId \
+        volumeSet.1.status := available/in-use)
+
+    # Print the device name
+    printf "$dev"
+
+    # Give it ten seconds to show up
+    for second in 0 1 2 3 4 5 6 7 8 9; do
+        if [ -e $dev ]; then sleep 2; return 0; fi
+        sleep 1
+    done
+
+    # If it wasn't attached: detach to clean up
+    if [ ! -e $dev ]; then
+        $(awsapi ec2.DetachVolume VolumeId=$volumeId)
+        $(awsapi ec2.DescribeVolumes VolumeId.1=$volumeId \
+            volumeSet.1.status := in-use/available)
+        while [ -n "$dev" ]; do dev="${dev%?}"; printf "\010"; done
+        return 1
+    fi
+
+    return 0
+}
+
+attach_somewhere() {
+    local role="$1"
+    local volumeId="$2"
+    local devPrefix x
+
+    # Ubuntu 11.04 is using /dev/xvd* devices
+    if [ -e /dev/xvda -o -e /dev/xvda1 ]; then
+        devPrefix=/dev/xvd
+    else
+        devPrefix=/dev/sd
+    fi
+
+    # Find a suitable device and attach the volume
+    dots "Selecting $role device"
+    for x in f g h i j k l m n o p; do
+        dev="$devPrefix$x";
+        if [ ! -e $dev ] && attach_volume $volumeId; then
+            echo; break;
+        fi;
+        if [ $x = p ]; then
+            echo "No device available"
+            exit 1
+        fi
+    done
+}
+
+create_snapshot() {
+    local oldProgress progress
+    local volumeId="$1"
+    local text="$2"
+
+    dots "Creating snapshot for $volumeId"
+    $(awsapi ec2.CreateSnapshot VolumeId=$volumeId \
+        Description="$text" snapshotId)
+
+    echo "$snapshotId"
+    unset oldProgress
+    progress="0%"
+
+    # Wait for snapshot completion
+    dots "Waiting for snapshot"
+    while true; do
+
+        # Use a different mode when completed
+        if [ "$progress" = "100%" ]; then
+            set_display_mode "$BOLD_GREEN"
+        else
+            set_display_mode "$NORMAL"
+        fi
+
+        # Print the progress
+        printf "%s" "${progress}"
+        if [ "$progress" = "100%" ]; then
+            set_display_mode "$NORMAL"
+            break
+        fi
+
+        # Wait before checking the progress
+        sleep 10; oldProgress="$progress"
+        $(awsapi ec2.DescribeSnapshots SnapshotId.1=$snapshotId \
+            snapshotSet.1.progress or "0%")
+
+        # Erase any old progress
+        while [ -n "$oldProgress" ]; do
+            oldProgress="${oldProgress%?}";
+            printf "\010";
+        done
+
+    done
+
+    # This should be completed, but let's make sure...
+    $(awsapi ec2.DescribeSnapshots SnapshotId.1=$snapshotId \
+        snapshotSet.1.status := pending/completed)
+
+    echo
+}
+
+### System Selection ##########################################################
+
+DEBIAN_AWS_ACCOUNT="379101102735"
+print_separator;
+prefixed=false
+suffix=""
+
+if [ "${system%/*}" != "${system}" ]; then
+    suffix="${system##*/}"
+    system="${system%/*}";
+fi
+
+# Make some decisions for the user
+if [ "$system" = "debian" ]; then system="debian-stretch"; fi
+if [ "$system" = "ubuntu" ]; then system="ubuntu-xenial"; fi
+if [ -n "$suffix" ]; then system="$system/$suffix"; fi
+
+# Check if we have a system prefix
+case "$system" in
+    *-*) prefixed=true;;
+esac
+
+# If not, temporarily assume Debian
+originalSystem="$system"
+if ! $prefixed; then
+    system="debian-$system"
+fi
+
+# Use the correct virtualization type
+if $paravirtual; then
+    vtype="paravirtual"
+else
+    vtype="hvm"
+fi
+
+# Map Debian releases to their corresponding snapshots:
+if [ "${system#debian-}" != "${system}" ]; then
+    system="${system#debian-}";
+    system="${system%/*}";
+
+    dots "Looking up Debian AMI for $system"
+
+    # Try to find an AMI
+    system=$(
+        $(awsapi --table ec2.DescribeImages Owner.1=$DEBIAN_AWS_ACCOUNT \
+            Filter.1.Name=architecture Filter.1.Value.1=$arch \
+            Filter.2.Name=root-device-type Filter.2.Value.1=ebs \
+            Filter.3.Name=virtualization-type Filter.3.Value.1=$vtype \
+            object+imagesSet.n.{ name, imageId } \
+        ) | grep -E "^debian-${system}-(amd64|i386)" \
+          | grep -Ev "squeeze-(amd64|i386)-pvm-2014-09-25-ebs" \
+          | sort | tail -1 | awk '{print $2}' \
+    )
+
+    # Give some user feedback
+    if [ -n "${system}" ]; then
+        echo "${system}"
+    elif $prefixed; then
+        echo "Not found!"
+        clean_exit 1
+    else
+        set_display_mode "$NORMAL"
+        system="$originalSystem"
+        echo "Not found"
+    fi
+fi
+
+# Map an AMI to its corresponding snapshot
+if [ "${system#ami-}" != "${system}" ]; then
+    dots "Mapping AMI to snapshot"
+    sourceImageId="${system}"
+
+    # Try to extract the associated snapshot ID
+    $(awsapi ec2.DescribeImages ImageId.1="$system" \
+        system:imagesSet.1.blockDeviceMapping.1.ebs.snapshotId or "" \
+        codeTypes:imagesSet.1.productCodes.n.type or "")
+
+    # Warn the user about Marketplace images
+    for codeType in $codeTypes; do
+        if [ "$codeType" = "marketplace" ]; then
+            echo "Marketplace AMI!"
+            set_display_mode "$NORMAL"
+            echo "AWS Marketplace images can't be directly cloned, but"
+            echo "you can try using --system=/ on a running instance."
+            clean_exit 1
+        fi
+    done
+
+    # Give some user feedback
+    if [ -n "${system}" ]; then
+        echo "${system}"
+    else
+        echo "Not found!"
+        clean_exit 1
+    fi
+fi
+
+# Be prepared to undo stuff
+trap cleanup INT EXIT
+unset status
+
+# If we just accepted an AMI:
+if [ -n "$sourceImageId" ]; then
+
+    # Check if the snapshot is available
+    dots "Checking snapshot visibility"
+    $(awsapi ec2.DescribeSnapshots SnapshotId.1="$system" \
+        snapshotSet.1.status or "" 2> /dev/null) || true
+
+    # Inform the user
+    if [ -n "$status" ]; then
+        echo "available"
+    else
+        echo "invisible"
+    fi
+fi
+
+# If we're dealing with an AMI but the snapshot is invisible:
+if [ -n "$sourceImageId" ] && [ -z "$status" ]; then
+    parameters="${subnet:+SubnetId=$subnet}"
+
+    # Launch a temporary instance
+    dots "Launching instance from $sourceImageId"
+    $(awsapi ec2.RunInstances ImageId="$sourceImageId" MinCount=1 MaxCount=1 \
+        $parameters InstanceType="$type" Placement.AvailabilityZone="$zone" \
+        instancesSet.1.instanceId)
+
+    # Wait for the instance to boot
+    wait_for_consistency Instance "$instanceId"
+    $(awsapi ec2.DescribeInstances \
+        Filter.1.{ Name="instance-id", Value.1="$instanceId" } \
+        reservationSet.1.instancesSet.1.instanceState.name \
+            := -/pending/running)
+
+    # Use it as "system"
+    system="$instanceId"
+    echo "$instanceId"
+fi
+
+# Go from an instance to a new snapshot
+if [ "${system#i-}" != "${system}" ]; then
+
+    # Locate the instance volume
+    dots "Finding volume for $system"
+    $(awsapi ec2.DescribeInstances InstanceId.1="$system" \
+        ebs:reservationSet.1.instancesSet.1.blockDeviceMapping.1.ebs.volumeId)
+    echo "$ebs"
+
+    # Create a temporary snapshot and terminate the instance
+    create_snapshot "$ebs" "Temporary Encroot snapshot"
+    system="$snapshotId"
+    terminate_instance;
+fi
+
+# Go from snapshot to a newly created volume
+if [ "${system#snap-}" != "${system}" ]; then
+    dots "Creating volume from $system"
+    $(awsapi ec2.CreateVolume AvailabilityZone=$zone \
+        SnapshotId="$system" createdSourceVolume:volumeId)
+    $(awsapi ec2.DescribeVolumes VolumeId.1=$createdSourceVolume \
+        volumeSet.1.status := creating/available)
+    system="$createdSourceVolume"
+    echo "$createdSourceVolume"
+    delete_snapshot;
+fi
+
+# A volume can be attached and mounted
+if [ "${system#vol-}" != "${system}" ]; then
+    attachedSourceVolume="$system"
+    attach_somewhere "source" "$system";
+    systemDirectory="$(mktemp --directory)"
+    for part in $(ls ${dev}? 2> /dev/null); do
+        if $SUDO file -bs "${part}" | grep -q "filesystem data"; then
+            dots "Selecting partition"; echo "${part}"
+            dev="${part}"; break
+        fi
+    done
+    $SUDO mount -o ro "$dev" "${systemDirectory}"
+    system="$systemDirectory"
+fi
+
+### Prepare an empty volume ###################################################
+
+# Create an empty volume and wait for it to become available
+dots "Creating target volume in $zone"
+$(awsapi ec2.CreateVolume AvailabilityZone=$zone Size=$volumeSize volumeId)
+$(awsapi ec2.DescribeVolumes VolumeId.1=$volumeId \
+    volumeSet.1.status := creating/available)
+    echo "$volumeId"
+
+# Attach it and initialize $dev
+attach_somewhere "target" "$volumeId"
+
+# A blank line before the next step
+echo
+
+### Create the encrypted filesystem ###########################################
+
+# Strip the optional "ubuntu-" prefix
+if [ ! -d "$system" ]; then
+    system="${system#ubuntu-}"
+fi
+
+# Put an encrypted filesystem on the volume
+args="--trust-me$options $dev $domain $system"
+eval '$SUDO "$home/make_encrypted_distro.sh"' $args
+
+# Remove the source volume
+remove_source_volume;
+
+# Detach the target volume
+dots "Detaching target volume"
+$(awsapi ec2.DetachVolume VolumeId=$volumeId)
+$(awsapi ec2.DescribeVolumes VolumeId.1=$volumeId \
+    volumeSet.1.status := in-use/available)
+    echo "done"
+
+# Create a snapshot from the volume
+create_snapshot "$volumeId" "$instanceName"
+
+# Delete the volume; we will work with the snapshot from now on
+dots "Deleting volume"
+$(awsapi ec2.DeleteVolume VolumeId=$volumeId return := true)
+echo "done"; unset volumeId
+
+### Launch the instance #######################################################
+
+# The virtualization type matters...
+if $paravirtual; then
+    regParams="$regParams KernelId=$kernelId"
+    device="/dev/sda"
+    rootDevice="/dev/sda1"
+else
+    device="/dev/xvda"
+    rootDevice="/dev/xvda"
+fi
+
+# Add the IOPS value if we have it
+if [ -n "$iops" ]; then
+    regParams="$regParams BlockDeviceMapping.1.Ebs.Iops=$iops"
+fi
+
+# Register the image
+dots "Registering image"
+$(awsapi ec2.RegisterImage $regParams \
+    BlockDeviceMapping.1.{ DeviceName=$device, \
+        Ebs.{ SnapshotId=$snapshotId, VolumeType="$ebsType" } } \
+    Name="$instanceName" RootDeviceName=$rootDevice VirtualizationType=$vtype \
+    Architecture=$arch imageId)
+    echo "$imageId"
+
+# Wait for the image to become available
+wait_for_consistency Image "$imageId"
+$(awsapi ec2.DescribeImages \
+    Filter.1.{ Name="image-id", Value.1="$imageId" } \
+    imagesSet.1.imageState := -/available)
+
+# Launch a new instance
+dots "Launching instance"
+$(awsapi ec2.RunInstances $runParams ImageId=$imageId MinCount=1 MaxCount=1 \
+    $params KeyName="$key" InstanceType="$type" Placement.Tenancy="$tenancy" \
+    Placement.AvailabilityZone="$zone" instancesSet.1.instanceId)
+
+# Wait for the instance to boot
+wait_for_consistency Instance "$instanceId"
+$(awsapi ec2.DescribeInstances \
+    Filter.1.{ Name="instance-id", Value.1="$instanceId" } \
+    reservationSet.1.instancesSet.1.instanceState.name \
+        := -/pending/running)
+
+echo "$instanceId"
+
+# Deregister the image
+dots "Deregistering image"
+$(awsapi ec2.DeregisterImage ImageId=$imageId return := true)
+echo "done"; unset imageId
+
+# Delete the snapshot
+delete_snapshot;
+
+### Configure the instance ####################################################
+
+# Get ID and IP address for the first network interface
+$(awsapi ec2.DescribeNetworkInterfaces \
+    Filter.1.Name=attachment.instance-id Filter.1.Value=$instanceId \
+    Filter.2.Name=attachment.device-index Filter.2.Value=0 \
+    networkInterfaceSet.1.{ \
+        networkInterfaceId or "", \
+        privateIpAddress or "" \
+    } \
+)
+
+# Set a name tag
+$(awsapi ec2.CreateTags ResourceId.1=$instanceId \
+    Tag.1.{ Key=Name, Value="$instanceName" })
+
+# If we have a public address to set:
+if [ -n "$ipAddress" ] && $public; then
+    dots "Setting IP address ($ipAddress)"
+    params=""
+
+    # Get the initial address (which may be empty for VPC)
+    $(awsapi ec2.DescribeInstances InstanceId.1=$instanceId \
+        reservationSet.1.instancesSet.1.{ \
+            oldIpAddress:ipAddress or "-" \
+        } \
+    )
+
+    # VPC likes to be different...
+    if [ -n "$vpc" ]; then
+        params="$params NetworkInterfaceId=$networkInterfaceId"
+        params="$params AllocationId=$allocationId"
+    else
+        params="$params InstanceId=$instanceId"
+        params="$params PublicIp=$ipAddress"
+    fi
+
+    # Associate the new address
+    $(awsapi ec2.AssociateAddress $params)
+
+    # Wait for the new address to replace the old one
+    $(awsapi ec2.DescribeInstances InstanceId.1=$instanceId \
+        reservationSet.1.instancesSet.1.ipAddress \
+            := $oldIpAddress/$ipAddress)
+
+    echo "done"
+fi
+
+### Display the result ########################################################
+
+echo; print_separator;
+echo "This is your new instance:"
+echo
+
+sed_string=""
+
+# Make the table header bold
+if $fancy && ! $no_fonts; then
+    set_display_mode "$BOLD"
+fi
+
+# Adjust the line between header and row
+if ! $fancy || $no_lines; then
+    sed_string="$sed_string; s/\[ -t 1 \]/false/"
+fi
+
+# Make the table row blue
+if $fancy && ! $no_color; then
+    sed_string="$sed_string;"' s/--";/--"; printf "\\033\['${BOLD_BLUE}'m";/'
+fi
+
+# Grab the "Name" tags for all "instance" resources
+$(awsapi ec2.DescribeTags tag@resourceId+tagSet.n.{ \
+    resourceId, resourceType eq instance, key eq Name, name:value \
+})
+
+# Describe the instance as a table, just to show off
+$(awsapi --table ec2.DescribeInstances InstanceId.1=$instanceId \
+    instance+reservationSet.1.instancesSet.1.{ \
+        instanceId, state:instanceState.name, \
+        zone:placement.availabilityZone, \
+        ~tag.name@instanceId, ipAddress or "${privateIpAddress:--}" \
+    } | sed "$sed_string" | sed 's/\\/\\\\/g')
+
+# This is a good idea
+domain="${domain:-${ipAddress:-${privateIpAddress:-your-server}}}"
+set_display_mode "$NORMAL"
+printf "Unlock at "
+set_display_mode "$BOLD_MAGENTA"
+if [ -n "$port" ] && [ "$port" != "443" ]; then
+    printf "https://${domain}:${port}/"
+else
+    printf "https://${domain}/"
+fi
+set_display_mode "$NORMAL"
+printf " before logging in.\n"
+
+# Missing default routes are confusing
+check_default_route;
+
+# Don't terminate the instance
+unset instanceId
+
+exitValue=0
+
+###############################################################################
